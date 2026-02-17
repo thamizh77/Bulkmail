@@ -5,8 +5,8 @@
 
 import axios from 'axios';
 
-// Base URL - /api for both Vercel (same-origin) and local dev (CRA proxy)
-const API_URL = process.env.REACT_APP_API_URL || '/api';
+// Base URL from env - required for cross-origin (different ports) and production
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5001/api';
 
 // Create axios instance
 const api = axios.create({

@@ -24,10 +24,15 @@ connectDB();
 const app = express();
 const PORT = process.env.PORT || 5001;
 
-// CORS - allow frontend (localhost for dev, same-origin on Vercel)
-const allowedOrigins = ['http://localhost:3000', 'http://127.0.0.1:3000'];
-if (process.env.VERCEL_URL) {
-  allowedOrigins.push(`https://${process.env.VERCEL_URL}`, `https://www.${process.env.VERCEL_URL}`);
+// CORS - allow common dev ports; set CORS_ORIGIN for production (e.g. Vercel frontend URL)
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:3001',
+];
+if (process.env.CORS_ORIGIN) {
+  allowedOrigins.push(...process.env.CORS_ORIGIN.split(',').map((o) => o.trim()));
 }
 const corsOptions = {
   origin: allowedOrigins,
@@ -56,11 +61,6 @@ app.use((req, res) => {
 // Centralized error handler (must be last)
 app.use(errorHandler);
 
-// Start server only when run directly (local dev), not when imported by Vercel
-if (!process.env.VERCEL) {
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-  });
-}
-
-module.exports = app;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
