@@ -1,76 +1,80 @@
-/**
- * Mail Controller – FIXED & OPTIMIZED
- */
-
 const nodemailer = require('nodemailer');
 const Mail = require('../models/Mail');
 
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
+const createTransporter = () => {
+  return nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,
+    },
+  });
+};
 
-/* Validate email */
-const isValidEmail = (email) =>
-  /^\S+@\S+\.\S+$/.test(email);
+const isValidEmail = (email) => /^\S+@\S+\.\S+$/.test(email);
 
-exports.sendMail = async (req, res, next) => {
+const sendMail = async (req, res, next) => {
   try {
     const { subject, body, recipients } = req.body;
 
     if (!subject || !body || !recipients) {
-      return res.status(400).json({ message: 'Missing fields' });
+      return res.status(400).json({ message: 'All fields required' });
     }
 
-    const recipientArray = recipients
+    const emails = recipients
       .split(',')
-      .map((e) => e.trim().toLowerCase())
+      .map(e => e.trim())
       .filter(isValidEmail);
 
-    if (!recipientArray.length) {
-      return res.status(400).json({ message: 'No valid emails' });
-    }
+    const transporter = createTransporter();
 
-    /* 🔥 SEND ALL EMAILS IN PARALLEL */
-    const results = await Promise.allSettled(
-      recipientArray.map((email) =>
-        transporter.sendMail({
+    let successCount = 0;
+    let failedCount = 0;
+    const failedEmails = [];
+
+    for (const email of emails) {
+      try {
+        await transporter.sendMail({
           from: process.env.EMAIL_USER,
           to: email,
           subject,
-          html: `<pre>${body}</pre>`,
-        })
-      )
-    );
-
-    const successCount = results.filter(r => r.status === 'fulfilled').length;
-    const failed = results
-      .map((r, i) => r.status === 'rejected' && recipientArray[i])
-      .filter(Boolean);
-
-    const status =
-      failed.length === 0 ? 'success' :
-      successCount === 0 ? 'failed' : 'partial';
+          text: body,
+        });
+        successCount++;
+      } catch (err) {
+        failedCount++;
+        failedEmails.push({ email, error: err.message });
+      }
+    }
 
     await Mail.create({
       subject,
       body,
-      recipients: recipientArray,
-      status,
+      recipients: emails,
+      status: successCount ? 'partial' : 'failed',
       successCount,
-      failedCount: failed.length,
-      failedEmails: failed,
+      failedCount,
+      failedEmails,
     });
 
-    return res.json({
+    res.json({
       success: true,
-      message: `Sent ${successCount} emails`,
+      successCount,
+      failedCount,
+      failedEmails,
     });
-
   } catch (err) {
     next(err);
   }
 };
+
+const getHistory = async (req, res, next) => {
+  try {
+    const mails = await Mail.find().sort({ createdAt: -1 });
+    res.json({ success: true, data: mails });
+  } catch (err) {
+    next(err);
+  }
+};
+
+module.exports = { sendMail, getHistory };
