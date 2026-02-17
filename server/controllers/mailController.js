@@ -7,16 +7,18 @@ const nodemailer = require('nodemailer');
 const Mail = require('../models/Mail');
 
 /**
- * Create Nodemailer transporter
- * Uses Gmail SMTP with credentials from env
+ * Create Nodemailer transporter (Production-safe)
  */
 const createTransporter = () => {
   return nodemailer.createTransport({
     service: 'gmail',
     auth: {
       user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS,
+      pass: process.env.EMAIL_PASS, // Gmail App Password
     },
+    connectionTimeout: 10000, // 10 sec
+    greetingTimeout: 10000,
+    socketTimeout: 10000,
   });
 };
 
@@ -24,79 +26,80 @@ const createTransporter = () => {
  * Validate email format
  */
 const isValidEmail = (email) => {
-  const emailRegex = /^\S+@\S+\.\S+$/;
-  return emailRegex.test(email.trim());
+  const regex = /^\S+@\S+\.\S+$/;
+  return regex.test(email);
 };
 
 /**
  * POST /api/mail/send
- * Send bulk emails to multiple recipients
- * Handles partial failures gracefully
+ * Send bulk emails
  */
 const sendMail = async (req, res, next) => {
   try {
     const { subject, body, recipients } = req.body;
 
-    // Validate required fields
+    // Basic validation
     if (!subject || !body || !recipients) {
       return res.status(400).json({
+        success: false,
         message: 'Subject, body, and recipients are required',
       });
     }
 
-    // Parse recipients (comma-separated string to array)
+    // Convert comma-separated emails to array
     const recipientArray = recipients
       .split(',')
-      .map((email) => email.trim().toLowerCase())
-      .filter((email) => email.length > 0);
+      .map((e) => e.trim().toLowerCase())
+      .filter((e) => e && isValidEmail(e));
 
     if (recipientArray.length === 0) {
       return res.status(400).json({
-        message: 'At least one valid recipient email is required',
+        success: false,
+        message: 'No valid recipient emails found',
       });
     }
 
-    // Validate email format
-    const invalidEmails = recipientArray.filter((email) => !isValidEmail(email));
-    if (invalidEmails.length > 0) {
-      return res.status(400).json({
-        message: `Invalid email format: ${invalidEmails.join(', ')}`,
-      });
-    }
-
-    // Create nodemailer transporter
     const transporter = createTransporter();
 
     let successCount = 0;
     let failedCount = 0;
     const failedEmails = [];
 
-    // Send emails to each recipient
-    for (const email of recipientArray) {
+    /**
+     * Send mails in parallel
+     * (No infinite waiting)
+     */
+    const sendPromises = recipientArray.map(async (email) => {
       try {
         await transporter.sendMail({
-          from: process.env.EMAIL_USER,
+          from: `"Bulk Mail" <${process.env.EMAIL_USER}>`,
           to: email,
           subject: subject.trim(),
-          text: body,
-          html: `<div style="white-space: pre-wrap;">${body.replace(/\n/g, '<br>')}</div>`,
+          html: `
+            <div style="font-family: Arial, sans-serif; white-space: pre-wrap;">
+              ${body.replace(/\n/g, '<br>')}
+            </div>
+          `,
         });
         successCount++;
       } catch (err) {
         failedCount++;
         failedEmails.push({
           email,
-          error: err.message || 'Failed to send',
+          error: err.message || 'Send failed',
         });
       }
-    }
+    });
 
-    // Determine overall status
+    // Wait for all mails (never hangs)
+    await Promise.allSettled(sendPromises);
+
+    // Status calculation
     let status = 'success';
     if (failedCount > 0 && successCount > 0) status = 'partial';
     else if (failedCount > 0) status = 'failed';
 
-    // Save to database for history
+    // Save history in DB
     const mailRecord = await Mail.create({
       subject: subject.trim(),
       body,
@@ -107,24 +110,23 @@ const sendMail = async (req, res, next) => {
       failedEmails,
     });
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: `Emails sent: ${successCount} successful, ${failedCount} failed`,
-      data: {
-        id: mailRecord._id,
-        successCount,
-        failedCount,
-        failedEmails: failedEmails.length > 0 ? failedEmails : undefined,
-      },
+      message: `Emails sent: ${successCount} success, ${failedCount} failed`,
+      data: mailRecord,
     });
   } catch (error) {
-    next(error);
+    console.error('Bulk mail error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Bulk mail failed',
+    });
   }
 };
 
 /**
  * GET /api/mail/history
- * Fetch all sent mail records (paginated)
+ * Fetch mail history (paginated)
  */
 const getHistory = async (req, res, next) => {
   try {
@@ -140,7 +142,7 @@ const getHistory = async (req, res, next) => {
 
     const total = await Mail.countDocuments();
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       data: mails,
       pagination: {
@@ -155,4 +157,7 @@ const getHistory = async (req, res, next) => {
   }
 };
 
-module.exports = { sendMail, getHistory };
+module.exports = {
+  sendMail,
+  getHistory,
+};
